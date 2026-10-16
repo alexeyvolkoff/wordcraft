@@ -30,7 +30,10 @@ pub fn start() {
         };
         let dirty = Rc::new(Cell::new(false));
         let saves = AsyncSaves::default();
-        if let Err(e) = guard_unload(dirty.clone(), saves.clone()) {
+        // In an OMD host frame the parent page guards unsaved changes itself (native modal);
+        // the browser's "leave site?" popup stays for the standalone page only.
+        let in_host = bridge::in_host();
+        if !in_host && let Err(e) = guard_unload(dirty.clone(), saves.clone()) {
             log::error!("no unsaved-changes guard: {e}");
         }
         let mut options = eframe::WebOptions::default();
