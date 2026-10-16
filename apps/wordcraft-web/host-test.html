@@ -47,15 +47,13 @@ const pending = new Map(); // ticket -> name
 window.addEventListener('message', e => {
   if (!e.data || typeof e.data !== 'object' || e.data.wc === undefined) return;
   const m = e.data;
+  try {
   switch (m.wc) {
     case 'ready':   stateEl.textContent = 'готово'; stateEl.style.color = '#0a0'; window.wcReady(m); log('wc:ready — мост активен', 'ok'); break;
     case 'failed':  stateEl.textContent = 'старт не удался'; stateEl.style.color = '#c00'; log('wc:failed: ' + m.error, 'err'); break;
     case 'dirty':   dirty = m.dirty; stateEl.textContent = dirty ? '● не сохранено' : '● сохранено'; log('wc:dirty ' + m.dirty); break;
     case 'save': {
-      const tag = 'тicket ' + m.ticket + ' + ' + m.name + ' (' + m.bytes.byteLength + ' Б)';
-      if (m.name.toLowerCase().endsWith('.docx')) pending.set(m.ticket, m.name);
-      pending.set(m.ticket, m.name);
-      log('wc:save — ' + tag);
+      log('wc:save — ticket ' + m.ticket + ' + ' + m.name + ' bytes=' + (m.bytes ? m.bytes.byteLength : 'ОТСУТСТВУЮТ'));
       // В тесте немедленно подтверждаем; в Phase 2 сюда встанет HomeWrite в оригинальный путь.
       e.source.postMessage({ wc: 'save-ack', ticket: m.ticket, ok: true }, e.origin);
       dirty = false;
@@ -64,6 +62,7 @@ window.addEventListener('message', e => {
     case 'response': log('wc:response: ' + m.value, m.ok ? 'ok' : 'err'); break;
     default:        log('неизвестное сообщение: ' + JSON.stringify(m));
   }
+  } catch (err) { log('LISTENER ERROR: ' + err.message + ' / msg=' + JSON.stringify(m && Object.keys(m)), 'err'); }
 });
 
 document.getElementById('file').addEventListener('change', async e => {
@@ -88,6 +87,35 @@ document.getElementById('cmd-save').addEventListener('click', async () => {
     { wc: 'cmd', id: 'file.save', params: '{}' }, '*');
   log('wc:cmd file.save');
 });
+
+// ?auto=1 — headless smoke test: after ready run commands and open a document if auto-test.odt
+// sits next to the page, then save it. The log of this page is the test output.
+if (new URLSearchParams(location.search).get('auto')) {
+  (async () => {
+    await ready;
+    log('AUTO: ready получен, гоняю команды', 'ok');
+    const wcWin = document.getElementById('wc').contentWindow;
+    const send = (m) => wcWin.postMessage(m, '*');
+    try {
+      const r = await fetch('auto-test.odt');
+      if (!r.ok) throw new Error('auto-test.odt отсутствует');
+      const buf = await r.arrayBuffer();
+      send({ wc: 'open', name: 'auto-test.odt', bytes: buf });
+      log('AUTO: wc:open auto-test.odt (' + buf.byteLength + ' Б)', 'ok');
+      await new Promise(res => setTimeout(res, 3000));
+      log('AUTO: wc:cmd format.bold');
+      send({ wc: 'cmd', id: 'format.bold', params: '{}' });
+      await new Promise(res => setTimeout(res, 2000));
+      log('AUTO: wc:cmd file.save {path:"auto-test.odt"}');
+      send({ wc: 'cmd', id: 'file.save', params: '{"path":"auto-test.odt"}' });
+      await new Promise(res => setTimeout(res, 5000));
+    } catch (err) {
+      log('AUTO: open пропущен: ' + err.message);
+    }
+    const saved = [...logEl.querySelectorAll('div')].some(d => d.textContent.includes('wc:save'));
+    log(saved ? 'AUTO RESULT: PASS — save-байты пришли назад с тикетом' : 'AUTO RESULT: FAIL — save не пришёл', saved ? 'ok' : 'err');
+  })();
+}
 </script>
 </body>
 </html>

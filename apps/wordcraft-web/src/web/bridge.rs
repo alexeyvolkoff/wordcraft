@@ -112,7 +112,17 @@ pub fn send_save(saves: &AsyncSaves, path: &str, bytes: &[u8]) -> Result<(), Str
 }
 
 /// Tell the host whether the document is dirty (its save-status indicator and the close dialog).
+/// The app calls this every frame; only the changes go through postMessage.
 pub fn post_dirty(dirty: bool) {
+    thread_local! {
+        /// The last value posted (2 = nothing yet).
+        static LAST_DIRTY: std::cell::Cell<u8> = const { std::cell::Cell::new(2) };
+    }
+    let value = dirty as u8;
+    if LAST_DIRTY.get() == value {
+        return;
+    }
+    LAST_DIRTY.set(value);
     if !in_host() {
         return;
     }
