@@ -12,6 +12,7 @@ use wordcraft_ui_egui::{Inbox, Services, WordApp};
 const DOC_EXTS: &[&str] = &["docx", "docm", "dotx", "dotm", "doc", "dot", "odt", "rtf", "txt", "md", "html", "htm", "tex", "json", "xml"];
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "wmf", "emf"];
 const RECIPIENT_EXTS: &[&str] = wordcraft_engine::cmd::mailings::RECIPIENT_EXTENSIONS;
+mod bridge;
 mod font_store;
 const CANVAS_ID: &str = "wordcraft_canvas";
 const LOADING_ID: &str = "wordcraft_loading";
@@ -61,6 +62,7 @@ pub fn start() {
                     let mut session = Session::new(doc);
                     session.system_region = region;
                     let messages = Rc::new(RefCell::new(Vec::new()));
+                    let commands = bridge::CommandQueue::default();
                     let mut app = WordApp::new(session, services(inbox.clone(), cc.egui_ctx.clone(), dirty, saves.clone(), messages.clone()));
                     // Pasted pictures wait apart from dropped files: the app inserts one only when the page is the edit target (#1349).
                     app.services.pasted = Some(pasted);
@@ -79,14 +81,28 @@ pub fn start() {
                     if !sample {
                         app.start_screen();
                     }
-                    Ok(Box::new(WebShell { app, inbox, messages, prefs }))
+                    // Inside an OMD host frame: open/save/dirty/commands through postMessage.
+                    if bridge::in_host()
+                        && let Err(e) = bridge::install(inbox.clone(), cc.egui_ctx.clone(), saves.clone(), commands.clone())
+                    {
+                        log::error!("no host bridge: {e}");
+                    }
+                    Ok(Box::new(WebShell { app, inbox, messages, prefs, commands }))
                 }),
             )
             .await;
+        let started = result.is_ok();
         if let Some(el) = document.get_element_by_id(LOADING_ID) {
             match result {
                 Ok(()) => el.remove(),
                 Err(e) => el.set_inner_html(&format!("<p>WordCraft failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>")),
+            }
+        }
+        if bridge::in_host() {
+            if started {
+                bridge::post_ready();
+            } else {
+                bridge::post_failed("WordCraft could not start: a browser with WebGPU or WebGL2 is required.");
             }
         }
     });
@@ -97,12 +113,14 @@ fn query() -> String {
 }
 
 /// Wraps the app to read dropped files asynchronously (browsers can't read them synchronously)
-/// and feed them through the inbox.
+/// and feed them through the inbox. Also drains `{wc:"cmd"}` from the host bridge (commands run
+/// before the frame's logic) and posts status lines to the host.
 struct WebShell {
     app: WordApp,
     inbox: Inbox,
     messages: Rc<RefCell<Vec<String>>>,
     prefs: crate::prefs::PrefsSync,
+    commands: bridge::CommandQueue,
 }
 
 fn local_storage() -> Option<web_sys::Storage> {
@@ -131,8 +149,24 @@ impl eframe::App for WebShell {
                 }
             });
         }
+        let cmds = std::mem::take(&mut *self.commands.borrow_mut());
+        for (id, params) in cmds {
+            match self.app.execute(&id, params.clone()) {
+                Ok(value) => {
+                    log::info!("bridge: command {id} ok");
+                    bridge::post_response(true, &value);
+                }
+                Err(e) => {
+                    log::error!("bridge: command {id} failed: {e}");
+                    bridge::post_response(false, &serde_json::json!({ "error": e, "id": id }));
+                }
+            }
+        }
         let msgs = std::mem::take(&mut *self.messages.borrow_mut());
         for msg in msgs {
+            if bridge::in_host() {
+                bridge::post_status(&msg);
+            }
             self.app.status(msg);
         }
         self.app.logic(ctx);
@@ -236,10 +270,21 @@ fn services(inbox: Inbox, ctx: egui::Context, dirty: Rc<Cell<bool>>, saves: Asyn
         // Exports ask for a name; the browser decides where the download goes.
         pick_save: Some(Box::new(|name: &str| Some(name.to_string()))),
         async_saves: Some(saves.clone()),
-        download: Some(Box::new(move |path: &str, bytes: &[u8]| download(&saves, &save_ctx, path, bytes))),
+        download: Some(Box::new(move |path: &str, bytes: &[u8]| {
+            // Inside an OMD host frame the host writes the bytes back to the document's original
+            // path and answers `save-ack`; standalone keeps the browser's save picker/download.
+            if bridge::in_host() {
+                bridge::send_save(&saves, path, bytes)
+            } else {
+                download(&saves, &save_ctx, path, bytes)
+            }
+        })),
         print: Some(Box::new(print_pdf)),
         inbox: Some(inbox),
-        on_dirty: Some(Box::new(move |d| dirty.set(d))),
+        on_dirty: Some(Box::new(move |d| {
+            dirty.set(d);
+            bridge::post_dirty(d);
+        })),
         animations_enabled: Some(animations_enabled()),
         store_font: Some(Box::new(font_store::store)),
         forget_font: Some(Box::new(font_store::forget)),

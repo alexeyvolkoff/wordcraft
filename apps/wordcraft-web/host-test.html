@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<!-- Test host page for the WordCraft <-> OMD postMessage bridge.
+     Serve it next to the built app (dist/web) from the same origin, e.g.:
+       python3 -m http.server 8772 -d dist/web
+     then open http://127.0.0.1:8772/host-test.html          -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>WordCraft host bridge test</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 0; height: 100vh; display: flex; flex-direction: column; background: #fafafa; }
+  header { padding: 8px 12px; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid #ddd; }
+  button, input[id=file]::file-selector-button { font: inherit; padding: 4px 10px; cursor: pointer; }
+  #state { margin-left: auto; color: #666; }
+  #log { flex: 1; overflow: auto; padding: 8px 12px; white-space: pre-wrap; font: 12px ui-monospace, monospace; color: #333; }
+  iframe { flex: 1; width: 100%; border: 0; border-top: 1px solid #ddd; }
+  .ok { color: #0a0; }
+  .err { color: #c00; }
+</style>
+</head>
+<body>
+<header>
+  <input type="file" id="file">
+  <button id="cmd-bold">cmd: format.bold</button>
+  <button id="cmd-save">cmd: file.save</button>
+  <span id="state">ожидание wc:ready …</span>
+</header>
+<div id="log"></div>
+<iframe id="wc" src="./index.html"></iframe>
+
+<script>
+const logEl = document.getElementById('log');
+const stateEl = document.getElementById('state');
+const ready = new Promise(res => { window.wcReady = res; });
+
+function log(msg, cls = '') {
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  logEl.append(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+let dirty = false;
+const pending = new Map(); // ticket -> name
+
+window.addEventListener('message', e => {
+  if (!e.data || typeof e.data !== 'object' || e.data.wc === undefined) return;
+  const m = e.data;
+  switch (m.wc) {
+    case 'ready':   stateEl.textContent = 'готово'; stateEl.style.color = '#0a0'; window.wcReady(m); log('wc:ready — мост активен', 'ok'); break;
+    case 'failed':  stateEl.textContent = 'старт не удался'; stateEl.style.color = '#c00'; log('wc:failed: ' + m.error, 'err'); break;
+    case 'dirty':   dirty = m.dirty; stateEl.textContent = dirty ? '● не сохранено' : '● сохранено'; log('wc:dirty ' + m.dirty); break;
+    case 'save': {
+      const tag = 'тicket ' + m.ticket + ' + ' + m.name + ' (' + m.bytes.byteLength + ' Б)';
+      if (m.name.toLowerCase().endsWith('.docx')) pending.set(m.ticket, m.name);
+      pending.set(m.ticket, m.name);
+      log('wc:save — ' + tag);
+      // В тесте немедленно подтверждаем; в Phase 2 сюда встанет HomeWrite в оригинальный путь.
+      e.source.postMessage({ wc: 'save-ack', ticket: m.ticket, ok: true }, e.origin);
+      dirty = false;
+      break; }
+    case 'status':  log('wc:status: ' + m.message); break;
+    case 'response': log('wc:response: ' + m.value, m.ok ? 'ok' : 'err'); break;
+    default:        log('неизвестное сообщение: ' + JSON.stringify(m));
+  }
+});
+
+document.getElementById('file').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  await ready;
+  const buf = await f.arrayBuffer();
+  document.getElementById('wc').contentWindow.postMessage({ wc: 'open', name: f.name, bytes: buf }, '*');
+  log('wc:open — ' + f.name + ' (' + buf.byteLength + ' Б)');
+});
+
+document.getElementById('cmd-bold').addEventListener('click', async () => {
+  await ready;
+  document.getElementById('wc').contentWindow.postMessage(
+    { wc: 'cmd', id: 'format.bold', params: '{}' }, '*');
+  log('wc:cmd format.bold');
+});
+
+document.getElementById('cmd-save').addEventListener('click', async () => {
+  await ready;
+  document.getElementById('wc').contentWindow.postMessage(
+    { wc: 'cmd', id: 'file.save', params: '{}' }, '*');
+  log('wc:cmd file.save');
+});
+</script>
+</body>
+</html>
