@@ -134,6 +134,12 @@ fn stored_prefs() -> Option<String> {
 
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // File › Close (ribbon/QAT/Ctrl+W) and the Save-changes flow end in `quit_requested`:
+        // the desktop app closes its window, here the host closes its viewer.
+        if self.app.quit_requested {
+            self.app.quit_requested = false;
+            bridge::post_doc_closed();
+        }
         let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
         for f in dropped {
             let inbox = self.inbox.clone();

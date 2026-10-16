@@ -134,6 +134,16 @@ pub fn post_dirty(dirty: bool) {
     }
 }
 
+/// The document was closed in the app (File › Close, a QAT button, New/Open replaced it): the
+/// host closes its viewer.
+pub fn post_doc_closed() {
+    let obj = Object::new();
+    let _ = Reflect::set(&obj, &JsValue::from_str("wc"), &JsValue::from_str("docClosed"));
+    if let Err(e) = post(&obj, None) {
+        log::warn!("bridge: couldn't post docClosed: {e}");
+    }
+}
+
 /// Post an engine-command response as a JSON string in the `value` field.
 pub fn post_response(ok: bool, payload: &Value) {
     let obj = Object::new();
