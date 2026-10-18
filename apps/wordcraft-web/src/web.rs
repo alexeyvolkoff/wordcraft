@@ -22,10 +22,16 @@ pub fn start() {
     wasm_bindgen_futures::spawn_local(async {
         let Some(document) = web_sys::window().and_then(|w| w.document()) else {
             log::error!("no document");
+            if bridge::in_host() {
+                bridge::post_failed("WordCraft could not start: no document.");
+            }
             return;
         };
         let Some(canvas) = document.get_element_by_id(CANVAS_ID).and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok()) else {
             log::error!("missing <canvas id=\"{CANVAS_ID}\">");
+            if bridge::in_host() {
+                bridge::post_failed(&format!("WordCraft could not start: missing <canvas id=\"{CANVAS_ID}\">."));
+            }
             return;
         };
         let dirty = Rc::new(Cell::new(false));

@@ -4,11 +4,11 @@
 //! engine commands travel through postMessage to the parent page instead of the browser file
 //! picker and downloads:
 //!
-//! host → editor: `{type:"open", name, bytes}`, `{type:"save-ack", ticket, ok, error?}`,
-//!                `{type:"cmd", id, params?}` (params is a JSON string)
-//! editor → host: `{type:"ready"}`, `{type:"failed", error}`, `{type:"dirty", dirty}`,
-//!                `{type:"save", ticket, name, bytes}`, `{type:"status", message}`,
-//!                `{type:"response", ok, value?}` / `{type:"response", ok:false, error}`
+//! host → editor: `{type:"wordcraft:open", name, bytes}`, `{type:"wordcraft:save-ack", ticket, ok, error?}`,
+//!                `{type:"wordcraft:cmd", id, params?}` (params is a JSON string)
+//! editor → host: `{type:"wordcraft:ready"}`, `{type:"wordcraft:failed", error}`, `{type:"wordcraft:dirty", dirty}`,
+//!                `{type:"wordcraft:save", ticket, name, bytes}`, `{type:"wordcraft:status", message}`,
+//!                `{type:"wordcraft:response", ok, value?}` / `{type:"wordcraft:response", ok:false, error}`
 //!
 //! Only enabled when embedded (`window.parent !== window`): the standalone page keeps the
 //! browser file picker and downloads. Incoming messages are accepted only from the host frame
@@ -72,7 +72,7 @@ fn post_json_str(kind: &str, extra_key: &str, extra_value: &str) {
     }
 }
 
-/// Tell the host the app is up and listening for `{type:"open"}`.
+/// Tell the host the app is up and listening for `{type:"wordcraft:open"}`.
 pub fn post_ready() {
     post_json_str("wordcraft:ready", "name", "wordcraft-web");
 }
@@ -83,7 +83,7 @@ pub fn post_failed(error: &str) {
 }
 
 /// The host forwards a save/export to the original document path. Starts a ticket and posts the
-/// bytes; the outcome arrives later as `{type:"save-ack"}`.
+/// bytes; the outcome arrives later as `{type:"wordcraft:save-ack"}`.
 pub fn send_save(saves: &AsyncSaves, path: &str, bytes: &[u8]) -> Result<(), String> {
     let ticket = saves.start();
     let name = std::path::Path::new(path)
@@ -128,7 +128,7 @@ pub fn post_dirty(dirty: bool) {
     }
     let obj = Object::new();
     let _ = Reflect::set(&obj, &JsValue::from_str("type"), &JsValue::from_str("wordcraft:dirty"));
-    let _ = Reflect::set(&obj, &JsValue::from_str("wordcraft:dirty"), &JsValue::from_bool(dirty));
+    let _ = Reflect::set(&obj, &JsValue::from_str("dirty"), &JsValue::from_bool(dirty));
     if let Err(e) = post(&obj, None) {
         log::warn!("bridge: couldn't post dirty: {e}");
     }
@@ -138,18 +138,19 @@ pub fn post_dirty(dirty: bool) {
 /// host closes its viewer.
 pub fn post_doc_closed() {
     let obj = Object::new();
-    let _ = Reflect::set(&obj, &JsValue::from_str("type"), &JsValue::from_str("docClosed"));
+    let _ = Reflect::set(&obj, &JsValue::from_str("type"), &JsValue::from_str("wordcraft:docClosed"));
     if let Err(e) = post(&obj, None) {
         log::warn!("bridge: couldn't post docClosed: {e}");
     }
 }
 
-/// Post an engine-command response as a JSON string in the `value` field.
+/// Post an engine-command response: results in the `value` field, failures in `error`.
 pub fn post_response(ok: bool, payload: &Value) {
     let obj = Object::new();
     let _ = Reflect::set(&obj, &JsValue::from_str("type"), &JsValue::from_str("wordcraft:response"));
     let _ = Reflect::set(&obj, &JsValue::from_str("ok"), &JsValue::from_bool(ok));
-    let _ = Reflect::set(&obj, &JsValue::from_str("value"), &JsValue::from_str(&payload.to_string()));
+    let field = if ok { "value" } else { "error" };
+    let _ = Reflect::set(&obj, &JsValue::from_str(field), &JsValue::from_str(&payload.to_string()));
     if let Err(e) = post(&obj, None) {
         log::warn!("bridge: couldn't post response: {e}");
     }
@@ -200,7 +201,7 @@ pub fn install(inbox: Inbox, ctx: egui::Context, saves: AsyncSaves, commands: Co
             return;
         };
         match kind.as_str() {
-            "open" => {
+            "wordcraft:open" => {
                 let name = field_str(&data, "name").unwrap_or_else(|| "opened".into());
                 let Some(bytes) = field_bytes(&data, "bytes") else {
                     log::warn!("bridge: open without bytes");
@@ -210,7 +211,7 @@ pub fn install(inbox: Inbox, ctx: egui::Context, saves: AsyncSaves, commands: Co
                 inbox.lock().unwrap_or_else(|er| er.into_inner()).push((name, bytes));
                 ctx.request_repaint();
             }
-            "save-ack" => {
+            "wordcraft:save-ack" => {
                 let Some(ticket) = field_u64(&data, "ticket") else {
                     return;
                 };
@@ -226,7 +227,7 @@ pub fn install(inbox: Inbox, ctx: egui::Context, saves: AsyncSaves, commands: Co
                 saves.finish(ticket, outcome);
                 ctx.request_repaint();
             }
-            "cmd" => {
+            "wordcraft:cmd" => {
                 let Some(id) = field_str(&data, "id") else {
                     return;
                 };
