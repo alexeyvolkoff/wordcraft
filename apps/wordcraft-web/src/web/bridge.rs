@@ -30,7 +30,7 @@ use web_sys::MessageEvent;
 use wordcraft_ui_egui::Inbox;
 use wordcraft_ui_egui::async_saves::{AsyncSaves, SaveOutcome};
 
-use crate::host_filter::{self, Incoming};
+use crate::host_filter::{self, Incoming, RawParams};
 
 /// Engine commands queued for the next frame: `(command id, params)`.
 pub type CommandQueue = Rc<RefCell<Vec<(String, Value)>>>;
@@ -260,7 +260,20 @@ pub fn install(inbox: Inbox, ctx: egui::Context, saves: AsyncSaves, commands: Co
                 let Some(id) = field_str(&data, "id") else {
                     return;
                 };
-                let params = field_str(&data, "params").and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or(json!({}));
+                let raw = field(&data, "params");
+                let text = raw.as_ref().and_then(|v| v.as_string());
+                let raw = match (&raw, &text) {
+                    (_, Some(s)) => RawParams::Text(s),
+                    (Some(v), None) if !v.is_undefined() && !v.is_null() => RawParams::NotText,
+                    _ => RawParams::Absent,
+                };
+                // Malformed params are refused, not replaced by `{}` (which would run e.g. a save
+                // under the default name).
+                let Some(params) = host_filter::cmd_params(raw) else {
+                    log::warn!("bridge: command {id} with malformed params dropped");
+                    post_response(false, &json!({ "error": "params must be a string of valid JSON", "id": id }));
+                    return;
+                };
                 commands.borrow_mut().push((id, params));
                 ctx.request_repaint();
             }

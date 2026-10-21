@@ -6,6 +6,8 @@
 //! parent window (not another same-origin iframe or a `window.open`ed window), and the type is one
 //! of the host → editor messages.
 
+use serde_json::Value;
+
 /// A host → editor message the bridge acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Incoming {
@@ -63,9 +65,31 @@ pub fn decide(origin: &str, own_origin: &str, source_is_parent: bool, kind: Opti
     }
 }
 
+/// The `params` field of a `wordcraft:cmd` message, as the bridge found it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RawParams<'a> {
+    /// Missing, `undefined` or `null`.
+    Absent,
+    /// A string (the documented form: JSON text).
+    Text(&'a str),
+    /// Present but not a string (a number, an object…).
+    NotText,
+}
+
+/// The engine params of a `wordcraft:cmd`: `{}` when absent, the parsed JSON when it is valid JSON
+/// text, `None` (drop the command) when present but malformed.
+pub fn cmd_params(raw: RawParams<'_>) -> Option<Value> {
+    match raw {
+        RawParams::Absent => Some(Value::Object(serde_json::Map::new())),
+        RawParams::Text(s) => serde_json::from_str(s).ok(),
+        RawParams::NotText => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     const OWN: &str = "https://omd.example";
 
@@ -114,5 +138,17 @@ mod tests {
         for kind in ["", "open", "wordcraft:ready", "wordcraft:save", "wordcraft:response", "wordcraft:docClosed", "WORDCRAFT:CMD"] {
             assert_eq!(decide(OWN, OWN, true, Some(kind)), Err(Rejected::UnknownType), "{kind}");
         }
+    }
+
+    /// CodeRabbit (#2919): absent params mean `{}`, malformed ones drop the command instead of
+    /// running it with `{}`.
+    #[test]
+    fn cmd_params_are_parsed_or_refused() {
+        assert_eq!(cmd_params(RawParams::Absent), Some(json!({})));
+        assert_eq!(cmd_params(RawParams::Text(r#"{"text":"Hello"}"#)), Some(json!({"text": "Hello"})));
+        assert_eq!(cmd_params(RawParams::Text("{}")), Some(json!({})));
+        assert_eq!(cmd_params(RawParams::Text("{not json")), None);
+        assert_eq!(cmd_params(RawParams::Text("")), None);
+        assert_eq!(cmd_params(RawParams::NotText), None);
     }
 }
