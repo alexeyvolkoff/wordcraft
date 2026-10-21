@@ -91,7 +91,8 @@ pub fn start() {
                         app.start_screen();
                     }
                     // Inside an OMD host frame: open/save/dirty/commands through postMessage.
-                    if bridge::in_host()
+                    // `install` refuses an opaque origin (sandboxed frame), which says why here.
+                    if bridge::embedded()
                         && let Err(e) = bridge::install(inbox.clone(), cc.egui_ctx.clone(), saves.clone(), commands.clone())
                     {
                         log::error!("no host bridge: {e}");
@@ -288,11 +289,7 @@ fn services(inbox: Inbox, ctx: egui::Context, dirty: Rc<Cell<bool>>, saves: Asyn
         download: Some(Box::new(move |path: &str, bytes: &[u8]| {
             // Inside an OMD host frame the host writes the bytes back to the document's original
             // path and answers `save-ack`; standalone keeps the browser's save picker/download.
-            if bridge::in_host() {
-                bridge::send_save(&saves, path, bytes)
-            } else {
-                download(&saves, &save_ctx, path, bytes)
-            }
+            if bridge::in_host() { bridge::send_save(&saves, path, bytes) } else { download(&saves, &save_ctx, path, bytes) }
         })),
         print: Some(Box::new(print_pdf)),
         inbox: Some(inbox),
