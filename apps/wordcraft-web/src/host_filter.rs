@@ -102,6 +102,14 @@ pub fn response_message(command_id: &str, request_id: Option<&str>, ok: bool, pa
     Value::Object(message)
 }
 
+/// The dirty state the host is told. The editor clears its dirty flag when it hands the bytes to
+/// the host, but the save only counts once the host answers `wordcraft:save-ack` with `ok: true`.
+/// Until every save in flight is answered the document reads as dirty, so a host write that fails
+/// (or an `ok: false` ack) never leaves it looking saved.
+pub fn reported_dirty(dirty: bool, saves_pending: usize) -> bool {
+    dirty || saves_pending > 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +187,14 @@ mod tests {
         let reply = response_message("text.insert", None, true, &json!(null));
         assert_eq!(reply["id"], "text.insert");
         assert!(reply.get("requestId").is_none());
+    }
+
+    #[test]
+    fn a_save_in_flight_keeps_the_document_dirty_for_the_host() {
+        assert!(!reported_dirty(false, 0));
+        assert!(reported_dirty(true, 0));
+        assert!(reported_dirty(false, 1), "handed to the host, not yet acknowledged");
+        assert!(reported_dirty(true, 2));
     }
 
     #[test]

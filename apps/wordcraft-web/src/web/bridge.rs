@@ -11,6 +11,9 @@
 //!                `{type:"wordcraft:save", ticket, name, bytes}`, `{type:"wordcraft:status", message}`,
 //!                `{type:"wordcraft:response", id, requestId?, ok, value?}` / `{type:"wordcraft:response", id, requestId?, ok:false, error}`
 //!
+//! A save is only done when the host answers `wordcraft:save-ack` with `ok: true`: until then `dirty` stays
+//! true, even though the editor already cleared its own flag when it sent `wordcraft:save`.
+//!
 //! Only enabled when embedded (`window.parent !== window`) with a concrete origin of its own: the
 //! standalone page keeps the browser file picker and downloads, and so does a frame sandboxed
 //! without `allow-same-origin` (opaque origin `"null"`: no sender can be vetted and nothing can be

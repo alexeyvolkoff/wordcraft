@@ -9,6 +9,8 @@ use wordcraft_engine::Session;
 use wordcraft_ui_egui::async_saves::{AsyncSaves, SaveOutcome};
 use wordcraft_ui_egui::{Inbox, Services, WordApp};
 
+use crate::host_filter;
+
 const DOC_EXTS: &[&str] = &["docx", "docm", "dotx", "dotm", "doc", "dot", "odt", "rtf", "txt", "md", "html", "htm", "tex", "json", "xml"];
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "wmf", "emf"];
 const RECIPIENT_EXTS: &[&str] = wordcraft_engine::cmd::mailings::RECIPIENT_EXTENSIONS;
@@ -259,6 +261,7 @@ fn listen_for_pasted_pictures(inbox: Inbox, ctx: egui::Context) -> Result<(), St
 fn services(inbox: Inbox, ctx: egui::Context, dirty: Rc<Cell<bool>>, saves: AsyncSaves, messages: Rc<RefCell<Vec<String>>>) -> Services {
     let open_inbox = inbox.clone();
     let save_ctx = ctx.clone();
+    let dirty_saves = saves.clone();
     let font_ctx = ctx.clone();
     let font_messages = messages.clone();
     Services {
@@ -295,7 +298,8 @@ fn services(inbox: Inbox, ctx: egui::Context, dirty: Rc<Cell<bool>>, saves: Asyn
         inbox: Some(inbox),
         on_dirty: Some(Box::new(move |d| {
             dirty.set(d);
-            bridge::post_dirty(d);
+            // Saved only once the host acks: until then the host still sees it as dirty.
+            bridge::post_dirty(host_filter::reported_dirty(d, dirty_saves.pending()));
         })),
         animations_enabled: Some(animations_enabled()),
         store_font: Some(Box::new(font_store::store)),
