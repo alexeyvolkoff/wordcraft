@@ -91,10 +91,16 @@ pub fn start() {
                         app.start_screen();
                     }
                     // Inside an OMD host frame: open/save/dirty/commands through postMessage.
-                    // `install` refuses an opaque origin (sandboxed frame), which says why here.
+                    // A usable origin with no listener must fail startup: the host would get
+                    // `ready` and then nothing — no open, no save-ack, no cmd handling. An
+                    // opaque origin (sandboxed frame) refuses to install and stays degraded
+                    // standalone, as before.
                     if bridge::embedded()
                         && let Err(e) = bridge::install(inbox.clone(), cc.egui_ctx.clone(), saves.clone(), commands.clone())
                     {
+                        if bridge::in_host() {
+                            return Err(format!("no host bridge: {e}").into());
+                        }
                         log::error!("no host bridge: {e}");
                     }
                     Ok(Box::new(WebShell { app, inbox, messages, prefs, commands }))
@@ -102,6 +108,7 @@ pub fn start() {
             )
             .await;
         let started = result.is_ok();
+        let reason = result.as_ref().err().map(|e| format!("{e:?}"));
         if let Some(el) = document.get_element_by_id(LOADING_ID) {
             match result {
                 Ok(()) => el.remove(),
@@ -112,7 +119,10 @@ pub fn start() {
             if started {
                 bridge::post_ready();
             } else {
-                bridge::post_failed("WordCraft could not start: a browser with WebGPU or WebGL2 is required.");
+                // The real startup failure (WebGPU/WebGL2 or the host bridge), so a broken
+                // bridge isn't reported to the host as a missing WebGPU.
+                let reason = reason.unwrap_or_else(|| "a browser with WebGPU or WebGL2 is required".into());
+                bridge::post_failed(&format!("WordCraft could not start: {reason}"));
             }
         }
     });
