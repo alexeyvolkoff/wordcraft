@@ -261,6 +261,8 @@ fn services(inbox: Inbox, ctx: egui::Context, dirty: Rc<Cell<bool>>, saves: Asyn
     let save_ctx = ctx.clone();
     let font_ctx = ctx.clone();
     let font_messages = messages.clone();
+    let host_saves = saves.clone();
+    let host_dirty = Cell::new(false);
     Services {
         open_async: Some(Box::new(move |purpose: &str| {
             let inbox = open_inbox.clone();
@@ -295,7 +297,19 @@ fn services(inbox: Inbox, ctx: egui::Context, dirty: Rc<Cell<bool>>, saves: Asyn
         inbox: Some(inbox),
         on_dirty: Some(Box::new(move |d| {
             dirty.set(d);
-            bridge::post_dirty(d);
+            if !bridge::in_host() {
+                return;
+            }
+            // The host hears transitions only, and hears "saved" (false) only once no save is
+            // in flight — a save the host hasn't acked yet never looks written. A failed or
+            // cancelled save sets `session.dirty` again in `settle_async_saves` before the
+            // frame reports, so the host keeps seeing the document dirty (review #2919:
+            // clear the flag on `save-ack {ok:true}` only).
+            let hears = d || host_saves.pending() > 0;
+            if hears != host_dirty.get() {
+                host_dirty.set(hears);
+                bridge::post_dirty(hears);
+            }
         })),
         animations_enabled: Some(animations_enabled()),
         store_font: Some(Box::new(font_store::store)),
