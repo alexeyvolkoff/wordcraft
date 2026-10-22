@@ -5,10 +5,11 @@
 //! picker and downloads:
 //!
 //! host → editor: `{type:"wordcraft:open", name, bytes}`, `{type:"wordcraft:save-ack", ticket, ok, error?}`,
-//!                `{type:"wordcraft:cmd", id, params?}` (params is a JSON string)
+//!                `{type:"wordcraft:cmd", id, params?, requestId?}` (`id` is the engine command, params is a JSON
+//!                string, `requestId` an optional string that comes back in the response)
 //! editor → host: `{type:"wordcraft:ready"}`, `{type:"wordcraft:failed", error}`, `{type:"wordcraft:dirty", dirty}`,
 //!                `{type:"wordcraft:save", ticket, name, bytes}`, `{type:"wordcraft:status", message}`,
-//!                `{type:"wordcraft:response", ok, value?}` / `{type:"wordcraft:response", ok:false, error}`
+//!                `{type:"wordcraft:response", id, requestId?, ok, value?}` / `{type:"wordcraft:response", id, requestId?, ok:false, error}`
 //!
 //! Only enabled when embedded (`window.parent !== window`) with a concrete origin of its own: the
 //! standalone page keeps the browser file picker and downloads, and so does a frame sandboxed
@@ -32,8 +33,8 @@ use wordcraft_ui_egui::async_saves::{AsyncSaves, SaveOutcome};
 
 use crate::host_filter::{self, Incoming, RawParams};
 
-/// Engine commands queued for the next frame: `(command id, params)`.
-pub type CommandQueue = Rc<RefCell<Vec<(String, Value)>>>;
+/// Engine commands queued for the next frame: `(command id, params, request id)`.
+pub type CommandQueue = Rc<RefCell<Vec<(String, Value, Option<String>)>>>;
 
 fn js(e: JsValue) -> String {
     format!("{e:?}")
@@ -171,13 +172,19 @@ pub fn post_doc_closed() {
     }
 }
 
-/// Post an engine-command response: results in the `value` field, failures in `error`.
-pub fn post_response(ok: bool, payload: &Value) {
+/// Post an engine-command response: results in the `value` field, failures in `error`, the
+/// command's `id` and the host's `requestId` (when it sent one) echoed so replies can be matched.
+pub fn post_response(command_id: &str, request_id: Option<&str>, ok: bool, payload: &Value) {
     let obj = Object::new();
-    let _ = Reflect::set(&obj, &JsValue::from_str("type"), &JsValue::from_str("wordcraft:response"));
-    let _ = Reflect::set(&obj, &JsValue::from_str("ok"), &JsValue::from_bool(ok));
-    let field = if ok { "value" } else { "error" };
-    let _ = Reflect::set(&obj, &JsValue::from_str(field), &JsValue::from_str(&payload.to_string()));
+    if let Value::Object(fields) = host_filter::response_message(command_id, request_id, ok, payload) {
+        for (key, value) in &fields {
+            let value = match value {
+                Value::Bool(b) => JsValue::from_bool(*b),
+                other => JsValue::from_str(other.as_str().unwrap_or_default()),
+            };
+            let _ = Reflect::set(&obj, &JsValue::from_str(key), &value);
+        }
+    }
     if let Err(e) = post(&obj, None) {
         log::warn!("bridge: couldn't post response: {e}");
     }
@@ -260,6 +267,7 @@ pub fn install(inbox: Inbox, ctx: egui::Context, saves: AsyncSaves, commands: Co
                 let Some(id) = field_str(&data, "id") else {
                     return;
                 };
+                let request_id = field_str(&data, "requestId");
                 let raw = field(&data, "params");
                 let text = raw.as_ref().and_then(|v| v.as_string());
                 let raw = match (&raw, &text) {
@@ -271,10 +279,10 @@ pub fn install(inbox: Inbox, ctx: egui::Context, saves: AsyncSaves, commands: Co
                 // under the default name).
                 let Some(params) = host_filter::cmd_params(raw) else {
                     log::warn!("bridge: command {id} with malformed params dropped");
-                    post_response(false, &json!({ "error": "params must be a string of valid JSON", "id": id }));
+                    post_response(&id, request_id.as_deref(), false, &json!({ "error": "params must be a string of valid JSON", "id": id }));
                     return;
                 };
-                commands.borrow_mut().push((id, params));
+                commands.borrow_mut().push((id, params, request_id));
                 ctx.request_repaint();
             }
         }

@@ -86,6 +86,22 @@ pub fn cmd_params(raw: RawParams<'_>) -> Option<Value> {
     }
 }
 
+/// The `wordcraft:response` for an engine command. `id` is the command's own id (as sent), and
+/// `requestId` is echoed from the host's `wordcraft:cmd` when it sent one, so a host that runs the
+/// same command twice can still match each reply to its request. Results go in `value`, failures
+/// in `error` (both JSON text, as before). Keys with no value are left out.
+pub fn response_message(command_id: &str, request_id: Option<&str>, ok: bool, payload: &Value) -> Value {
+    let mut message = serde_json::Map::new();
+    message.insert("type".into(), Value::from("wordcraft:response"));
+    message.insert("id".into(), Value::from(command_id));
+    if let Some(request_id) = request_id {
+        message.insert("requestId".into(), Value::from(request_id));
+    }
+    message.insert("ok".into(), Value::from(ok));
+    message.insert(if ok { "value" } else { "error" }.into(), Value::from(payload.to_string()));
+    Value::Object(message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +158,29 @@ mod tests {
 
     /// CodeRabbit (#2919): absent params mean `{}`, malformed ones drop the command instead of
     /// running it with `{}`.
+    #[test]
+    fn a_response_echoes_the_request_id_so_replies_can_be_matched() {
+        let ok = response_message("text.insert", Some("req-7"), true, &json!({ "inserted": 5 }));
+        assert_eq!(ok["type"], "wordcraft:response");
+        assert_eq!(ok["id"], "text.insert");
+        assert_eq!(ok["requestId"], "req-7");
+        assert_eq!(ok["ok"], true);
+        assert_eq!(ok["value"], r#"{"inserted":5}"#);
+        assert!(ok.get("error").is_none());
+        let failed = response_message("text.insert", Some("req-8"), false, &json!({ "error": "no selection" }));
+        assert_eq!(failed["requestId"], "req-8");
+        assert_eq!(failed["ok"], false);
+        assert_eq!(failed["error"], r#"{"error":"no selection"}"#);
+        assert!(failed.get("value").is_none());
+    }
+
+    #[test]
+    fn a_response_without_a_request_id_has_none() {
+        let reply = response_message("text.insert", None, true, &json!(null));
+        assert_eq!(reply["id"], "text.insert");
+        assert!(reply.get("requestId").is_none());
+    }
+
     #[test]
     fn cmd_params_are_parsed_or_refused() {
         assert_eq!(cmd_params(RawParams::Absent), Some(json!({})));
