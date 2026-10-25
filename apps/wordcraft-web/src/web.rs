@@ -99,7 +99,7 @@ pub fn start() {
                         crate::host::Bridge::set_author(&mut app, &author);
                         prefs.keep_own_author(&app.session.author, &own);
                     }
-                    Ok(Box::new(WebShell { app, inbox, messages, prefs }))
+                    Ok(Box::new(WebShell { app, inbox, messages, prefs, bridge: app_bridge }))
                 }),
             )
             .await;
@@ -134,6 +134,7 @@ struct WebShell {
     inbox: Inbox,
     messages: Rc<RefCell<Vec<String>>>,
     prefs: crate::prefs::PrefsSync,
+    bridge: Option<crate::host::Bridge>,
 }
 
 fn local_storage() -> Option<web_sys::Storage> {
@@ -150,11 +151,88 @@ impl eframe::App for WebShell {
     /// then writes changed preferences to browser storage immediately, because a reload or closed
     /// tab never runs the exit path.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // File › Close (ribbon/QAT/Ctrl+W) and the Save-changes flow end in `quit_requested`:
+        // the desktop app closes its window, here the host closes its viewer. In host mode a
+        // successful `wordcraft:cmd` `file.close` also posts `wordcraft:docClosed` (below).
+        if self.app.quit_requested {
+            self.app.quit_requested = false;
+            if let Some(bridge) = &self.bridge {
+                bridge.post_doc_closed();
+            }
+        }
         let msgs = std::mem::take(&mut *self.messages.borrow_mut());
         for msg in msgs {
             self.app.status(msg);
         }
         self.app.logic(ctx);
+        if let Some(bridge) = &self.bridge {
+            for (id, params, request_id) in bridge.take_commands() {
+                let parsed = if params.trim().is_empty() {
+                    serde_json::json!({})
+                } else {
+                    match serde_json::from_str(&params) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            bridge.post_response(&id, request_id.as_deref(), false, Some(&format!("invalid params for {id}: {e}")));
+                            continue;
+                        }
+                    }
+                };
+                match self.app.run(&id, parsed) {
+                    Ok(v) => {
+                        bridge.post_response(&id, request_id.as_deref(), true, Some(&v.to_string()));
+                        if id == "file.close"
+                            && v.get("closed").and_then(serde_json::Value::as_bool) == Some(true)
+                        {
+                            bridge.post_doc_closed();
+                        }
+                    }
+                    Err(e) => bridge.post_response(&id, request_id.as_deref(), false, Some(&e)),
+                }
+            }
+        }
+        // Store changed preferences straight away: a reload or closed tab runs no exit code (#2132).
+        if let Some(json) = self.prefs.changed(&self.app) {
+            match local_storage() {
+                Some(store) => {
+                    if let Err(e) = store.set_item(crate::prefs::KEY, &json) {
+                        log::warn!("preferences: cannot save: {e:?}");
+                    }
+                }
+                None => log::warn!("preferences: browser storage is unavailable"),
+            }
+        }
+        let msgs = std::mem::take(&mut *self.messages.borrow_mut());
+        for msg in msgs {
+            self.app.status(msg);
+        }
+        self.app.logic(ctx);
+        if let Some(bridge) = &self.bridge {
+            for (id, params, request_id) in bridge.take_commands() {
+                let parsed = if params.trim().is_empty() {
+                    serde_json::json!({})
+                } else {
+                    match serde_json::from_str(&params) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            bridge.post_response(&id, request_id.as_deref(), false, Some(&format!("invalid params for {id}: {e}")));
+                            continue;
+                        }
+                    }
+                };
+                match self.app.run(&id, parsed) {
+                    Ok(v) => {
+                        bridge.post_response(&id, request_id.as_deref(), true, Some(&v.to_string()));
+                        if id == "file.close"
+                            && v.get("closed").and_then(serde_json::Value::as_bool) == Some(true)
+                        {
+                            bridge.post_doc_closed();
+                        }
+                    }
+                    Err(e) => bridge.post_response(&id, request_id.as_deref(), false, Some(&e)),
+                }
+            }
+        }
         // Store changed preferences straight away: a reload or closed tab runs no exit code (#2132).
         if let Some(json) = self.prefs.changed(&self.app) {
             match local_storage() {
