@@ -1,8 +1,7 @@
-#![allow(dead_code)]
 //! The host bridge's message filter: which incoming postMessage the editor acts on.
 //!
 //! Pure (no browser types), so the accept/reject decision is pinned by native tests; the bridge
-//! (`web/bridge.rs`) feeds it the facts of each `message` event. A message is accepted only when
+//! (`host.rs`) feeds it the facts of each `message` event. A message is accepted only when
 //! the page has a concrete origin of its own, the sender has that same origin, the sender is the
 //! parent window (not another same-origin iframe or a `window.open`ed window), and the type is one
 //! of the host → editor messages.
@@ -14,7 +13,8 @@ use serde_json::Value;
 pub enum Incoming {
     /// `{type:"wordcraft:open", name, bytes}`
     Open,
-    /// `{type:"wordcraft:save-ack", ticket, ok, error?}`
+    /// `{type:"wordcraft:save-ack", ...}` — accepted for compatibility; the upstream
+    /// bridge no longer sends it, and the editor ignores it.
     SaveAck,
     /// `{type:"wordcraft:cmd", id, params?}`
     Cmd,
@@ -64,43 +64,6 @@ pub fn decide(origin: &str, own_origin: &str, source_is_parent: bool, kind: Opti
         Some("wordcraft:cmd") => Ok(Incoming::Cmd),
         Some(_) => Err(Rejected::UnknownType),
     }
-}
-
-/// The `params` field of a `wordcraft:cmd` message, as the bridge found it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RawParams<'a> {
-    /// Missing, `undefined` or `null`.
-    Absent,
-    /// A string (the documented form: JSON text).
-    Text(&'a str),
-    /// Present but not a string (a number, an object…).
-    NotText,
-}
-
-/// The engine params of a `wordcraft:cmd`: `{}` when absent, the parsed JSON when it is valid JSON
-/// text, `None` (drop the command) when present but malformed.
-pub fn cmd_params(raw: RawParams<'_>) -> Option<Value> {
-    match raw {
-        RawParams::Absent => Some(Value::Object(serde_json::Map::new())),
-        RawParams::Text(s) => serde_json::from_str(s).ok(),
-        RawParams::NotText => None,
-    }
-}
-
-/// The `wordcraft:response` for an engine command. `id` is the command's own id (as sent), and
-/// `requestId` is echoed from the host's `wordcraft:cmd` when it sent one, so a host that runs the
-/// same command twice can still match each reply to its request. Results go in `value`, failures
-/// in `error` (both JSON text, as before). Keys with no value are left out.
-pub fn response_message(command_id: &str, request_id: Option<&str>, ok: bool, payload: &Value) -> Value {
-    let mut message = serde_json::Map::new();
-    message.insert("type".into(), Value::from("wordcraft:response"));
-    message.insert("id".into(), Value::from(command_id));
-    if let Some(request_id) = request_id {
-        message.insert("requestId".into(), Value::from(request_id));
-    }
-    message.insert("ok".into(), Value::from(ok));
-    message.insert(if ok { "value" } else { "error" }.into(), Value::from(payload.to_string()));
-    Value::Object(message)
 }
 
 #[cfg(test)]
@@ -155,40 +118,5 @@ mod tests {
         for kind in ["", "open", "wordcraft:ready", "wordcraft:save", "wordcraft:response", "wordcraft:docClosed", "WORDCRAFT:CMD"] {
             assert_eq!(decide(OWN, OWN, true, Some(kind)), Err(Rejected::UnknownType), "{kind}");
         }
-    }
-
-    /// CodeRabbit (#2919): absent params mean `{}`, malformed ones drop the command instead of
-    /// running it with `{}`.
-    #[test]
-    fn a_response_echoes_the_request_id_so_replies_can_be_matched() {
-        let ok = response_message("text.insert", Some("req-7"), true, &json!({ "inserted": 5 }));
-        assert_eq!(ok["type"], "wordcraft:response");
-        assert_eq!(ok["id"], "text.insert");
-        assert_eq!(ok["requestId"], "req-7");
-        assert_eq!(ok["ok"], true);
-        assert_eq!(ok["value"], r#"{"inserted":5}"#);
-        assert!(ok.get("error").is_none());
-        let failed = response_message("text.insert", Some("req-8"), false, &json!({ "error": "no selection" }));
-        assert_eq!(failed["requestId"], "req-8");
-        assert_eq!(failed["ok"], false);
-        assert_eq!(failed["error"], r#"{"error":"no selection"}"#);
-        assert!(failed.get("value").is_none());
-    }
-
-    #[test]
-    fn a_response_without_a_request_id_has_none() {
-        let reply = response_message("text.insert", None, true, &json!(null));
-        assert_eq!(reply["id"], "text.insert");
-        assert!(reply.get("requestId").is_none());
-    }
-
-    #[test]
-    fn cmd_params_are_parsed_or_refused() {
-        assert_eq!(cmd_params(RawParams::Absent), Some(json!({})));
-        assert_eq!(cmd_params(RawParams::Text(r#"{"text":"Hello"}"#)), Some(json!({"text": "Hello"})));
-        assert_eq!(cmd_params(RawParams::Text("{}")), Some(json!({})));
-        assert_eq!(cmd_params(RawParams::Text("{not json")), None);
-        assert_eq!(cmd_params(RawParams::Text("")), None);
-        assert_eq!(cmd_params(RawParams::NotText), None);
     }
 }

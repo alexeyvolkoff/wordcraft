@@ -18,6 +18,14 @@
 //!   - Save As or Export to a format that doesn't (PDF, Markdown, plain text), Export as PDF and
 //!     Export Page as PNG: `false`. They are copies; the document's file stays the same.
 //! - `wordcraft:dirty` (to the parent): `{ dirty }` whenever unsaved changes appear or go away.
+//! - `wordcraft:cmd` (from the parent): `{ id, params?, requestId? }` runs the engine command
+//!   `id` (any `wordcraft:cmd` the desktop app accepts) like a ribbon button. `params` is a JSON
+//!   string (absent or `null` means `{}`); `requestId` is echoed in the response.
+//! - `wordcraft:response` (to the parent): `{ id, requestId?, ok, value? }` or
+//!   `{ id, requestId?, ok: false, error }` for every `wordcraft:cmd`, once it has run.
+//! - `wordcraft:docClosed` (to the parent): sent when the document the parent opened closes
+//!   (a successful `wordcraft:cmd` `file.close`, or a `quit` close); the standalone page never
+//!   posts it.
 //! - `wordcraft:failed` (to the parent): `{ error }` when the app couldn't start.
 //!
 //! Only the parent window on the page's own origin is heard or answered. In host mode the parent
@@ -78,14 +86,7 @@ impl Bridge {
         if parent.location().origin().ok()? != origin {
             return None;
         }
-        Some(Self {
-            window,
-            parent,
-            origin,
-            commands: Rc::default(),
-            queued_bytes: Rc::default(),
-            queued_id_bytes: Rc::default(),
-        })
+        Some(Self { window, parent, origin, commands: Rc::default(), queued_bytes: Rc::default(), queued_id_bytes: Rc::default() })
     }
 
     /// Hand saved and exported files to the parent instead of downloading them, report unsaved
@@ -214,14 +215,24 @@ impl Bridge {
                         Some(v) => {
                             let js_len = v.dyn_ref::<js_sys::JsString>().map(|s| s.length() as usize);
                             if js_len.unwrap_or(usize::MAX) > MAX_PARAMS_BYTES {
-                                bridge.post_response(&id, request_id.as_deref(), false, Some(&format!("params are larger than {MAX_PARAMS_BYTES} bytes")));
+                                bridge.post_response(
+                                    &id,
+                                    request_id.as_deref(),
+                                    false,
+                                    Some(&format!("params are larger than {MAX_PARAMS_BYTES} bytes")),
+                                );
                                 ctx.request_repaint();
                                 return;
                             }
                             match v.as_string() {
                                 Some(text) if text.len() <= MAX_PARAMS_BYTES => text,
                                 Some(_) => {
-                                    bridge.post_response(&id, request_id.as_deref(), false, Some(&format!("params are larger than {MAX_PARAMS_BYTES} bytes")));
+                                    bridge.post_response(
+                                        &id,
+                                        request_id.as_deref(),
+                                        false,
+                                        Some(&format!("params are larger than {MAX_PARAMS_BYTES} bytes")),
+                                    );
                                     ctx.request_repaint();
                                     return;
                                 }

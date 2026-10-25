@@ -153,7 +153,8 @@ impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // File › Close (ribbon/QAT/Ctrl+W) and the Save-changes flow end in `quit_requested`:
         // the desktop app closes its window, here the host closes its viewer. In host mode a
-        // successful `wordcraft:cmd` `file.close` also posts `wordcraft:docClosed` (below).
+        // successful `wordcraft:cmd` `file.close` also posts `wordcraft:docClosed` (below),
+        // so the UI close path is not the only one that notifies the parent.
         if self.app.quit_requested {
             self.app.quit_requested = false;
             if let Some(bridge) = &self.bridge {
@@ -223,9 +224,7 @@ impl eframe::App for WebShell {
                 match self.app.run(&id, parsed) {
                     Ok(v) => {
                         bridge.post_response(&id, request_id.as_deref(), true, Some(&v.to_string()));
-                        if id == "file.close"
-                            && v.get("closed").and_then(serde_json::Value::as_bool) == Some(true)
-                        {
+                        if id == "file.close" && v.get("closed").and_then(serde_json::Value::as_bool) == Some(true) {
                             bridge.post_doc_closed();
                         }
                     }
