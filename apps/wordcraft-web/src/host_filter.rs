@@ -66,10 +66,18 @@ pub fn decide(origin: &str, own_origin: &str, source_is_parent: bool, kind: Opti
     }
 }
 
+/// Whether a successful `file.close` result posts `wordcraft:docClosed` to the host.
+///
+/// The host posts it on a `{"quit": true}` close and on a host `wordcraft:cmd`
+/// `file.close` that reports `{"closed": true}`. A plain File › Close that keeps the
+/// window (`{"closed": false}` or a dirty close) does not.
+pub fn posts_doc_closed(result: &Value) -> bool {
+    result.get("closed").and_then(Value::as_bool) == Some(true) || result.get("quit").and_then(Value::as_bool) == Some(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     const OWN: &str = "https://omd.example";
 
@@ -118,5 +126,14 @@ mod tests {
         for kind in ["", "open", "wordcraft:ready", "wordcraft:save", "wordcraft:response", "wordcraft:docClosed", "WORDCRAFT:CMD"] {
             assert_eq!(decide(OWN, OWN, true, Some(kind)), Err(Rejected::UnknownType), "{kind}");
         }
+    }
+
+    #[test]
+    fn doc_closed_posts_on_a_closed_or_quit_result() {
+        assert!(posts_doc_closed(&serde_json::json!({"closed": true})));
+        assert!(posts_doc_closed(&serde_json::json!({"quit": true})));
+        assert!(!posts_doc_closed(&serde_json::json!({"closed": false})));
+        assert!(!posts_doc_closed(&serde_json::json!({"closed": false, "dirty": true})));
+        assert!(!posts_doc_closed(&serde_json::json!({})));
     }
 }

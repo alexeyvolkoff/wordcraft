@@ -151,10 +151,11 @@ impl eframe::App for WebShell {
     /// then writes changed preferences to browser storage immediately, because a reload or closed
     /// tab never runs the exit path.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // File › Close (ribbon/QAT/Ctrl+W) and the Save-changes flow end in `quit_requested`:
-        // the desktop app closes its window, here the host closes its viewer. In host mode a
-        // successful `wordcraft:cmd` `file.close` also posts `wordcraft:docClosed` (below),
-        // so the UI close path is not the only one that notifies the parent.
+        // `quit_requested` is set only by a `{"quit": true}` close (the window's close button or
+        // the Save-changes flow). A plain File › Close keeps the window and does not post
+        // `wordcraft:docClosed`; only a `quit` close or a successful host `wordcraft:cmd`
+        // `file.close` (handled in the command loop below) posts it. The standalone page never
+        // posts it, since `self.bridge` is `None` there.
         if self.app.quit_requested {
             self.app.quit_requested = false;
             if let Some(bridge) = &self.bridge {
@@ -182,9 +183,7 @@ impl eframe::App for WebShell {
                 match self.app.run(&id, parsed) {
                     Ok(v) => {
                         bridge.post_response(&id, request_id.as_deref(), true, Some(&v.to_string()));
-                        if id == "file.close"
-                            && v.get("closed").and_then(serde_json::Value::as_bool) == Some(true)
-                        {
+                        if crate::host_filter::posts_doc_closed(&v) {
                             bridge.post_doc_closed();
                         }
                     }
