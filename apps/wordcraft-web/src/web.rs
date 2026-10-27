@@ -151,11 +151,9 @@ impl eframe::App for WebShell {
     /// then writes changed preferences to browser storage immediately, because a reload or closed
     /// tab never runs the exit path.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // `quit_requested` is set only by a `{"quit": true}` close (the window's close button or
-        // the Save-changes flow). A plain File › Close keeps the window and does not post
-        // `wordcraft:docClosed`; only a `quit` close or a successful host `wordcraft:cmd`
-        // `file.close` (handled in the command loop below) posts it. The standalone page never
-        // posts it, since `self.bridge` is `None` there.
+        // `quit_requested` is set only by a `{"quit": true}` close. A plain File > Close keeps
+        // the window and does not post `wordcraft:docClosed`; only a `quit` close or a successful
+        // host `wordcraft:cmd` `file.close` (handled below) posts it.
         if self.app.quit_requested {
             self.app.quit_requested = false;
             if let Some(bridge) = &self.bridge {
@@ -184,46 +182,6 @@ impl eframe::App for WebShell {
                     Ok(v) => {
                         bridge.post_response(&id, request_id.as_deref(), true, Some(&v.to_string()));
                         if crate::host_filter::posts_doc_closed(&v) {
-                            bridge.post_doc_closed();
-                        }
-                    }
-                    Err(e) => bridge.post_response(&id, request_id.as_deref(), false, Some(&e)),
-                }
-            }
-        }
-        // Store changed preferences straight away: a reload or closed tab runs no exit code (#2132).
-        if let Some(json) = self.prefs.changed(&self.app) {
-            match local_storage() {
-                Some(store) => {
-                    if let Err(e) = store.set_item(crate::prefs::KEY, &json) {
-                        log::warn!("preferences: cannot save: {e:?}");
-                    }
-                }
-                None => log::warn!("preferences: browser storage is unavailable"),
-            }
-        }
-        let msgs = std::mem::take(&mut *self.messages.borrow_mut());
-        for msg in msgs {
-            self.app.status(msg);
-        }
-        self.app.logic(ctx);
-        if let Some(bridge) = &self.bridge {
-            for (id, params, request_id) in bridge.take_commands() {
-                let parsed = if params.trim().is_empty() {
-                    serde_json::json!({})
-                } else {
-                    match serde_json::from_str(&params) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            bridge.post_response(&id, request_id.as_deref(), false, Some(&format!("invalid params for {id}: {e}")));
-                            continue;
-                        }
-                    }
-                };
-                match self.app.run(&id, parsed) {
-                    Ok(v) => {
-                        bridge.post_response(&id, request_id.as_deref(), true, Some(&v.to_string()));
-                        if id == "file.close" && v.get("closed").and_then(serde_json::Value::as_bool) == Some(true) {
                             bridge.post_doc_closed();
                         }
                     }
